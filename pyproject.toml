@@ -1,0 +1,22 @@
+[project]
+name = "multi-agent-orchestrator"
+version = "0.1.0"
+description = "Production-grade multi-agent system with structured handoffs, workspace memory, tool registration, and full trace observability."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Darrshan Govender", email = "darrshangovender@gmail.com" }]
+keywords = ["llm", "agents", "multi-agent", "orchestration", "agentic"]
+dependencies = [
+    "pydantic>=2.7",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40.0"]
+openai = ["openai>=1.50.0"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

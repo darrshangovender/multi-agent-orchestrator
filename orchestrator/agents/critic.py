@@ -14,8 +14,6 @@ from __future__ import annotations
 import json
 import re
 
-from pydantic import Field
-
 from ..agent import Agent
 from ..core import AgentResult, Handoff, Result, Workspace
 from ..trace import Trace

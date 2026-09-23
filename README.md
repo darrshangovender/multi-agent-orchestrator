@@ -1,132 +1,129 @@
-<div align="center">
+# multi-agent-orchestrator — a multi-agent loop you can read, step through, and trace
 
-# multi-agent-orchestrator — production-grade multi-agent system with full observability
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)]
-[![tests](https://github.com/darrshangovender/multi-agent-orchestrator/actions/workflows/tests.yml/badge.svg)](https://github.com/darrshangovender/multi-agent-orchestrator/actions/workflows/tests.yml)(LICENSE)
+[![tests](https://github.com/darrshangovender/multi-agent-orchestrator/actions/workflows/tests.yml/badge.svg)](https://github.com/darrshangovender/multi-agent-orchestrator/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
-[![Anthropic](https://img.shields.io/badge/Anthropic-Claude-CC785C)](https://anthropic.com)
-[![OpenAI](https://img.shields.io/badge/OpenAI-API-412991?logo=openai&logoColor=white)](https://platform.openai.com)
-[![Pydantic](https://img.shields.io/badge/Pydantic-2.7+-E92063?logo=pydantic&logoColor=white)](https://pydantic.dev)
-[![Status](https://img.shields.io/badge/Status-Working%20code-blue)](#)
+[![Pydantic](https://img.shields.io/badge/Pydantic-2-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev)
 
-</div>
+> A small, production-shaped framework for role-based agent systems. Agents have explicit roles, exchange **structured Pydantic handoffs** rather than freeform text, share a named-slot workspace instead of a replayed transcript, and emit a trace event for every handoff, tool call and model call. Ships with a planner–researcher–writer–critic pipeline.
 
----
-
-> A small but production-shaped framework for **role-based multi-agent systems**. Agents have explicit roles, talk to each other through **structured Pydantic handoffs** (never freeform text), share a workspace memory, register tools, and emit a full trace of every step. Ships with a research-writer-critic example that produces a sourced answer with no orchestrator-level glue code.
-
-**Why this exists.** Most "agent frameworks" are either too magic (LangGraph hides the control flow) or too thin (you re-implement the orchestration loop every project). This library exposes the loop as code you can read, while giving you the parts that actually deserve abstraction: structured handoffs, workspace memory, tool registration, and tracing. Two hundred lines covers 80% of the agent systems I've shipped.
+**Why this exists.** Most agent frameworks are either too magic — the control flow disappears into a graph DSL — or too thin, and you re-implement the orchestration loop every project. This exposes the loop as code you can set a breakpoint in, while abstracting the parts that deserve it: typed handoffs, workspace memory, tool registration, and tracing.
 
 ---
 
-## The core loop
+## Quick start
 
+```bash
+pip install -e ".[anthropic,dev]"     # or ".[openai,dev]"
+export ANTHROPIC_API_KEY=...
+python examples/research_demo.py
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Orchestrator                                                 │
-│                                                               │
-│   ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐  │
-│   │ Planner │ ─▶ │Researchr│ ─▶ │ Writer  │ ─▶ │ Critic  │  │
-│   └─────────┘    └─────────┘    └─────────┘    └─────────┘  │
-│        │              │              │              │        │
-│        └──────────────┴──── Workspace ─────────────┘        │
-│                                                               │
-│                       ┌──── Trace ────┐                      │
-│                       │ every step    │                      │
-│                       │ logged        │                      │
-│                       └───────────────┘                      │
-└──────────────────────────────────────────────────────────────┘
-```
-
-Each agent receives a typed **Handoff** from the orchestrator, returns a typed **Result**, and writes intermediate observations to the **Workspace**. The orchestrator decides what runs next based on the result schema, not on parsing freeform text.
-
-## Example: research-writer-critic
 
 ```python
-from orchestrator import Orchestrator, Workspace
+from orchestrator import Orchestrator, Workspace, tool
 from orchestrator.agents import Planner, Researcher, Writer, Critic
 from orchestrator.tools import web_search
 
-ws = Workspace()
+@tool(description="Look up an internal doc by id.")
+def get_doc(doc_id: str, max_chars: int = 2000) -> dict:
+    return {"id": doc_id, "text": "..."}
+
 orch = Orchestrator(
     agents={
         "planner":    Planner(model="claude-sonnet-4-5"),
-        "researcher": Researcher(tools=[web_search]),
+        "researcher": Researcher(tools=[web_search, get_doc]),
         "writer":     Writer(model="claude-sonnet-4-5"),
         "critic":     Critic(model="claude-opus-4-7", max_revisions=2),
     },
-    workspace=ws,
+    workspace=Workspace(initial={"tenant": "acme"}),
 )
 
-result = orch.run(
-    "Write a 300-word answer with sources to: "
-    "What is the difference between RAG and fine-tuning?"
-)
-print(result.final_answer)
-print(result.trace.summary())
+final = orch.run("What is the difference between RAG and fine-tuning?")
+print(final.final_answer, final.critic_score, len(final.sources))
+print(final.trace.summary())    # events · llm_calls · tokens · cost
 ```
 
-Output (abbreviated):
+## How it works
+
+```mermaid
+flowchart LR
+    Q[question] --> P[Planner]
+    P --> R[Researcher]
+    R --> W[Writer]
+    W --> C[Critic]
+    C -->|score < 8| W
+    C -->|accept or cap| F[final answer]
+    P -.-> WS[(Workspace)]
+    R -.-> WS
+    W -.-> WS
+    C -.-> WS
+    WS -.-> T[(Trace)]
+```
+
+1. `run()` builds a typed `PlanInput` and calls `step("planner", ...)`.
+2. `step()` emits `handoff_in`, opens a timed span, runs the agent, **type-checks the return**, applies its workspace writes, and emits `handoff_out`.
+3. The planner decomposes the question into sub-questions in the workspace.
+4. The researcher calls its `web_search` tool once per sub-question and writes structured sources.
+5. The write/critique loop runs up to `max_revisions + 1` times: the writer reads sources and prior feedback, the critic scores against a fixed rubric and decides revise or accept.
+6. The loop breaks on acceptance or the revision cap.
+7. Every model call emits an `llm_call` event carrying model, tokens, cost and duration.
+
+## The four agents
+
+| Agent | Handoff in → out | What it does |
+|---|---|---|
+| `Planner` | `PlanInput` → `PlanOutput` | One call at temperature 0.3; decomposes into 3–6 sub-questions with reasoning |
+| `Researcher` | `ResearchInput` → `ResearchOutput` | **No model call** — loops the sub-questions through the `web_search` tool and builds `Source` models |
+| `Writer` | `WriteInput` → `WriteOutput` | Reads `sources` and `critic_feedback` from the workspace; drafts at temperature 0.5 |
+| `Critic` | `CriticInput` → `CriticOutput` | Fixed four-part rubric out of 10, accepts at ≥ 8.0; owns the revision cap |
+
+Workspace slots written along the way: `sub_questions`, `plan_reasoning`, `sources`, `contradictions`, `draft`, `draft_revision`, `citation_count`, `critic_score`, `critic_feedback`, `critic_accept`.
+
+## Design decisions
+
+| Decision | Why |
+|---|---|
+| **Structured handoffs, not freeform text** | Every agent declares its input and output as Pydantic models. Invalid output fails at the boundary instead of quietly propagating — no "the model returned something odd and we kept going". |
+| **A workspace, not a message history** | Agents read and write named slots. It saves tokens (no replaying the whole conversation), enforces a real shape (sources, drafts, scores each live somewhere), and makes debugging trivial because every state is a snapshot. |
+| **A trace, not logs** | Every handoff, tool call and model call is a structured event with timestamps, tokens and cost. You can replay a run, roll up its spend, or export it. |
+| **A hard revision cap** | Without one, a critic that keeps rejecting drafts runs forty times and bills you for it. |
+| **No LangGraph** | LangGraph is excellent but hides the loop in a graph DSL. Shipping into someone else's codebase, you want the opposite: a loop they can step through in a debugger and change with a normal PR. |
+
+## Limitations
+
+- **There is no LLM tool-calling loop.** The `to_anthropic_schema()` / `to_openai_schema()` methods are never called anywhere in the repo, and the LLM client has no `tools` parameter. The researcher calls `web_search` directly in a Python `for` loop. Tool *registration* is real; tool *dispatch by the model* is not implemented. This is the single largest gap between what the framework looks like and what it does.
+- **The demo's sources are fabricated.** `web_search` returns `Result {i} for {query}` at `example.com`, and `_flag_contradictions` returns an empty list unconditionally. The pipeline runs end to end and produces a well-structured answer cited entirely to placeholders.
+- **Validation is weaker than advertised.** `step()` checks only that the agent returned an `AgentResult`. It never verifies the inner result matches the agent's declared output schema, and nothing checks the handoff type matches what the agent expects. The real validation is the Pydantic construction inside each agent's own `run()`.
+- **`max_total_iterations` is dead.** It is stored and never read. The only loop bound is the critic's `max_revisions` — and a pipeline built without an agent keyed `"critic"` will raise `AttributeError` reaching for it.
+- **Trace timing double-counts.** The total sums every event's duration, including both the agent-level span and the nested model calls inside it, so `summary()` overstates wall clock. The span stack is also unbalanced on failure: `step()` re-raises without closing the span, corrupting timing for the rest of the run.
+- **No resilience in the model path.** A brand-new provider client is constructed on every call, with no retry, backoff, timeout, or rate-limit handling. A single 429 propagates out of `run()` and the partial workspace and trace are lost. Provider selection is a `model.startswith("claude-")` string test, so Bedrock, Vertex and Azure model ids route to the wrong SDK.
+- **Everything is sequential and in-memory.** The workspace is an unbounded dict retaining every value ever written, including full drafts; the trace is an unbounded list. There is no checkpointing, so a crash mid-run loses the whole pipeline. Parallel fan-out for independent sub-tasks is the obvious next step and is not built.
+- **Cost is silently zero for unpriced models** — the price lookup returns `None` and the rollup coalesces it away, so `summary()` reports `$0.0000` for anything outside the small hardcoded table.
+- **The sample run output has been removed from this README.** It quoted source counts, word counts, revision scores, call counts, latency and dollar cost. None of it is traceable — there is no fixture, recording, benchmark or eval in this repo that produces those numbers.
+
+## Project layout
 
 ```
-[planner]    decomposed into 4 sub-questions
-[researcher] gathered 6 sources, 2 contradictions flagged
-[writer]     drafted 312 words, 4 citations
-[critic]     rev 1 → score 7.5/10, "tighten the 'when to fine-tune' paragraph"
-[writer]     rev 2 → 287 words, 5 citations
-[critic]     rev 2 → score 9.0/10, accept
-[orch]       total 7 LLM calls, 14.2s, $0.18
-```
-
-## What makes this different from "just call the API in a loop"
-
-1. **Structured handoffs only.** Every agent declares its input + output type as Pydantic models. The orchestrator validates at the boundary — invalid output fails fast, doesn't silently propagate. No "the LLM returned something weird and we kept going".
-2. **Workspace, not message history.** Agents read and write to a shared key-value workspace. Saves tokens (don't replay the whole conversation), enforces a real schema (sources, drafts, scores live in named slots), and makes debugging trivial — every workspace state is a snapshot.
-3. **Trace, not logs.** Every step (handoff in, tool call, LLM call, handoff out) is a structured trace event with timestamps, tokens, cost. Replay the run, summarize cost, export for dashboards.
-4. **Max-iteration safety.** Every agent loop has a hard cap. No "ran 47 times costing $400 because the critic kept rejecting drafts".
-5. **Provider portable.** Same agent code runs on Anthropic, OpenAI, or any provider with a chat-completions-shaped API. Picks model per agent role.
-
-## Repo structure
-
-```
-.
+multi-agent-orchestrator/
 ├── orchestrator/
-│   ├── __init__.py
-│   ├── core.py            # Orchestrator + Workspace + Handoff + Result
-│   ├── agent.py           # Agent base class
-│   ├── trace.py           # Structured trace events + summary
-│   ├── llm.py             # provider-portable LLM client
-│   ├── tools.py           # @tool decorator + tool registry
-│   └── agents/
-│       ├── __init__.py
-│       ├── planner.py     # Decomposes the question into sub-tasks
-│       ├── researcher.py  # Uses tools, gathers sources, flags contradictions
-│       ├── writer.py      # Produces draft from workspace
-│       └── critic.py      # Scores + decides revise vs accept
-├── examples/
-│   └── research_demo.py
-├── tests/
-│   └── test_handoffs.py
-└── pyproject.toml
+│   ├── core.py          # Orchestrator · Workspace · Handoff · Result · AgentResult
+│   ├── agent.py         # Agent base: system prompt, model call, trace emission
+│   ├── llm.py           # provider-portable client + price table
+│   ├── tools.py         # @tool decorator + registry + demo web_search
+│   ├── trace.py         # structured events, cost/token rollups, summary
+│   └── agents/          # planner · researcher · writer · critic
+├── examples/            # research_demo.py (needs a real API key)
+└── tests/               # 5 tests
 ```
 
-## Why no `pip install langgraph`
+## Tests
 
-LangGraph is excellent, but it hides the orchestration as a graph DSL. You don't get to read the loop. For shipping into someone else's codebase you want exactly the opposite: a loop they can step through with a debugger and modify with a normal PR. This library is that loop, exposed.
+```bash
+pytest tests/ -q         # 5 tests
+```
 
-## Status
-
-- [x] Orchestrator + Workspace + structured Handoff/Result
-- [x] Agent base class with system prompt + tool binding
-- [x] Provider-portable LLM client (Anthropic + OpenAI)
-- [x] Tool decorator + tool registry
-- [x] Full trace: handoffs, LLM calls, tool calls, cost, latency
-- [x] Planner / Researcher / Writer / Critic agents
-- [x] Max-iteration safety per agent
-- [ ] Parallel agent execution (next: fan-out for independent sub-tasks)
-- [ ] Streaming handoffs (intermediate updates during long tools)
+Honest state: the suite covers workspace get/set with actor attribution, Pydantic rejection of an invalid handoff, output defaults, and the orchestrator's type check on agent returns. Nothing touches `Trace`, the tool registry, schema generation, the LLM client, or any agent's `run()` — which is where most of the limitations above live. CI runs it on every push.
 
 ## Author
 
-Darrshan Govender · Founder, [Agulhas Code](https://agulhascode.co.za)
+Darrshan Govender · [Agulhas Code](https://agulhascode.co.za) · Durban, South Africa

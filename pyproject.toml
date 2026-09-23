@@ -15,8 +15,32 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40.0"]
 openai = ["openai>=1.50.0"]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/darrshangovender/multi-agent-orchestrator"
+Issues = "https://github.com/darrshangovender/multi-agent-orchestrator/issues"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# The distribution name ("multi-agent-orchestrator") does not match the import
+# package directory ("orchestrator/"), so hatchling cannot infer what to ship.
+# Without this it aborts the build with "Unable to determine which files to
+# ship", which breaks `pip install -e .` in CI.
+[tool.hatch.build.targets.wheel]
+packages = ["orchestrator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

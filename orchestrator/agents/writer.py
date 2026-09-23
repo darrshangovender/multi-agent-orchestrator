@@ -6,8 +6,6 @@ inline citation markers like [1], [2]. The critic uses those markers to score.
 
 from __future__ import annotations
 
-from pydantic import Field
-
 from ..agent import Agent
 from ..core import AgentResult, Handoff, Result, Workspace
 from ..trace import Trace

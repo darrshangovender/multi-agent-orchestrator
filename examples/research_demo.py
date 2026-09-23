@@ -9,7 +9,7 @@ Run:
 from __future__ import annotations
 
 from orchestrator import Orchestrator, Workspace
-from orchestrator.agents import Planner, Researcher, Writer, Critic
+from orchestrator.agents import Critic, Planner, Researcher, Writer
 from orchestrator.tools import web_search
 
 

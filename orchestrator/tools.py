@@ -12,9 +12,9 @@ tools convert this internal Tool spec into the provider's specific tool format.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, get_type_hints
-
+from typing import get_type_hints
 
 _PY_TO_JSON = {str: "string", int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
 

@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from orchestrator import Orchestrator, Workspace
 from orchestrator.agents import PlanInput, PlanOutput
-from orchestrator.core import AgentResult
 
 
 def test_workspace_set_get():

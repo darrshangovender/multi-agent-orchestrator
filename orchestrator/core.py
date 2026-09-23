@@ -20,12 +20,10 @@ from .trace import Trace
 
 class Handoff(BaseModel):
     """Base for agent inputs. Subclass per agent role to pin a strict schema."""
-    pass
 
 
 class Result(BaseModel):
     """Base for agent outputs. Subclass per agent role."""
-    pass
 
 
 @dataclass
@@ -87,22 +85,31 @@ class Orchestrator:
         agent = self.agents[agent_name]
         self.trace.emit("handoff_in", agent_name, handoff_type=type(handoff).__name__)
         self.trace.start(agent_name, kind="summary")
+        # The span must be closed on every exit path. When `run` raised, `end`
+        # was never reached and the frame stayed on the stack — the *next*
+        # successful step's `end` then popped that stale frame, attributing its
+        # own duration to the failed agent and timing it from the wrong start.
+        closed = False
         try:
             result = agent.run(handoff, workspace=self.workspace, trace=self.trace)
+            # Validate result is the right type for this agent
+            if not isinstance(result, AgentResult):
+                raise TypeError(f"{agent_name}.run() must return AgentResult, got {type(result).__name__}")
+            self.workspace.update(result.workspace_writes, actor=agent_name)
+            self.trace.end(result_type=type(result.result).__name__)
+            closed = True
         except Exception as e:
             self.trace.emit("error", agent_name, error=str(e)[:300])
             raise
-        # Validate result is the right type for this agent
-        if not isinstance(result, AgentResult):
-            raise TypeError(f"{agent_name}.run() must return AgentResult, got {type(result).__name__}")
-        self.workspace.update(result.workspace_writes, actor=agent_name)
-        self.trace.end(result_type=type(result.result).__name__)
+        finally:
+            if not closed:
+                self.trace.end(failed=True)
         self.trace.emit("handoff_out", agent_name, result_type=type(result.result).__name__)
         return result
 
     def run(self, question: str) -> Any:
         """Default linear pipeline. Override for fan-out or branching."""
-        from .agents import PlanInput, ResearchInput, WriteInput, CriticInput
+        from .agents import CriticInput, PlanInput, ResearchInput, WriteInput
 
         # 1. Plan
         plan = self.step("planner", PlanInput(question=question)).result
